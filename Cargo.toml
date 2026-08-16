@@ -2,6 +2,9 @@
 name = "cuckoo-bench"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/sshaplygin/cuckoo-bench"
+description = "Benchmark of Swiss-table-style SIMD cuckoo filters vs classic cuckoo and Bloom filters"
 
 [dependencies]
 

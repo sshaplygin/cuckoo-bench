@@ -171,3 +171,7 @@ Implementations:
   probe this project borrows, including the NEON `vshrn` movemask trick.
 - [Cuckoo hashing improves SIMD hash tables](https://reiner.org/cuckoo-hashing)
   — a write-up of the cuckoo + SIMD-group idea for hash tables.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
