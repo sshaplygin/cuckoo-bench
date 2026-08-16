@@ -2,6 +2,7 @@ use cuckoo_bench::bloom::BloomFilter;
 use cuckoo_bench::hash::xorshift;
 use cuckoo_bench::simd::SimdCuckooFilter;
 use cuckoo_bench::standard::CuckooFilter;
+use cuckoo_bench::standard16::CuckooFilter16;
 use cuckoo_bench::wide::WideCuckooFilter;
 
 fn keys(n: usize, mut seed: u64) -> Vec<u64> {
@@ -36,6 +37,23 @@ fn simd_insert_then_contains_at_high_load() {
         assert!(filter.contains(key));
         assert!(filter.contains_scalar(key));
     }
+}
+
+#[test]
+fn standard16_insert_then_contains_and_tiny_fpr() {
+    let items = keys((SLOTS as f64 * 0.85) as usize, 1);
+    let probes = keys(1 << 21, 0xabcdef);
+    let mut filter = CuckooFilter16::with_capacity(SLOTS);
+    for key in &items {
+        assert!(filter.insert(key), "insert failed at load {:.3}", filter.load_factor());
+    }
+    for key in &items {
+        assert!(filter.contains(key));
+    }
+    let hits = probes.iter().filter(|k| filter.contains(*k)).count();
+    let fpr = hits as f64 / probes.len() as f64;
+    // Theory: ~2 * 4/65535 * 0.85 ~= 0.010% — half of wide8x16.
+    assert!(fpr < 0.0005, "standard16 FPR too high: {fpr}");
 }
 
 #[test]
@@ -143,9 +161,11 @@ fn memory_accounting() {
     // Equal slot capacity: byte-fingerprint tables are equal, wide is 2x.
     let standard = CuckooFilter::with_capacity(1 << 16);
     let simd = SimdCuckooFilter::with_capacity(1 << 16);
+    let standard16 = CuckooFilter16::with_capacity(1 << 16);
     let wide = WideCuckooFilter::with_capacity(1 << 16);
     let bloom = BloomFilter::new((1 << 16) * 8, 7);
     assert_eq!(standard.memory_bytes(), 1 << 16);
+    assert_eq!(standard16.memory_bytes(), 2 << 16);
     assert_eq!(simd.memory_bytes(), 1 << 16);
     assert_eq!(wide.memory_bytes(), 2 << 16);
     assert_eq!(bloom.memory_bytes(), 1 << 16);

@@ -8,6 +8,7 @@ use cuckoo_bench::bloom::BloomFilter;
 use cuckoo_bench::hash::xorshift;
 use cuckoo_bench::simd::SimdCuckooFilter;
 use cuckoo_bench::standard::CuckooFilter;
+use cuckoo_bench::standard16::CuckooFilter16;
 use cuckoo_bench::wide::WideCuckooFilter;
 
 const TOTAL_SLOTS: usize = 1 << 20;
@@ -23,6 +24,7 @@ fn main() {
     let absent = keys(1 << 20, 0x1234_5678_9abc_def0);
 
     let mut standard = CuckooFilter::with_capacity(TOTAL_SLOTS);
+    let mut standard16 = CuckooFilter16::with_capacity(TOTAL_SLOTS);
     let mut simd = SimdCuckooFilter::with_capacity(TOTAL_SLOTS);
     let mut wide = WideCuckooFilter::with_capacity(TOTAL_SLOTS);
     // Same memory as the byte-fingerprint tables: 8 bits per slot.
@@ -31,6 +33,7 @@ fn main() {
 
     for key in &present {
         assert!(standard.insert(key), "standard filter rejected an insert");
+        assert!(standard16.insert(key), "standard16 filter rejected an insert");
         assert!(simd.insert(key), "simd filter rejected an insert");
         assert!(wide.insert(key), "wide filter rejected an insert");
         bloom.insert(key);
@@ -44,6 +47,7 @@ fn main() {
     println!("memory (fingerprint table only):");
     for (name, bytes) in [
         ("standard 4x8bit scalar", standard.memory_bytes()),
+        ("standard 4x16bit scalar", standard16.memory_bytes()),
         ("swiss 16x8bit simd", simd.memory_bytes()),
         ("wide 8x16bit simd", wide.memory_bytes()),
         ("bloom k=7 scalar", bloom.memory_bytes()),
@@ -57,8 +61,9 @@ fn main() {
     println!();
 
     type Probe<'a> = (&'a str, Box<dyn Fn(&u64) -> bool + 'a>);
-    let probes: [Probe; 5] = [
+    let probes: [Probe; 6] = [
         ("standard 4x8bit scalar", Box::new(|k| standard.contains(k))),
+        ("standard 4x16bit scalar", Box::new(|k| standard16.contains(k))),
         ("swiss 16x8bit simd", Box::new(|k| simd.contains(k))),
         ("swiss 16x8bit scalar", Box::new(|k| simd.contains_scalar(k))),
         ("wide 8x16bit simd", Box::new(|k| wide.contains(k))),

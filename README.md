@@ -5,13 +5,18 @@ cuckoo filter and a Bloom filter.
 
 ## Implementations
 
-| | `standard::CuckooFilter` | `simd::SimdCuckooFilter` | `wide::WideCuckooFilter` |
-| --- | --- | --- | --- |
-| Bucket layout | 4 × 8-bit fingerprints | 16 × 8-bit fingerprints (one 16-byte group, like a hashbrown control group) | 8 × 16-bit fingerprints (same 16-byte group) |
-| Probe | scalar byte-by-byte compare | one 128-bit load + vector compare + movemask (NEON `vceqq_u8`/`vshrn` on aarch64, SSE2 `_mm_cmpeq_epi8` on x86_64, scalar fallback elsewhere) | same, over 16-bit lanes (`vceqq_u16` / `_mm_cmpeq_epi16`) |
-| Memory | 1 byte/slot | 1 byte/slot | 2 bytes/slot |
-| Max load | ~95% | ~98% | ~97% |
-| FPR @ 85% load | ~2.7% | ~10.2% | ~0.023% |
+| | `standard::CuckooFilter` | `standard16::CuckooFilter16` | `simd::SimdCuckooFilter` | `wide::WideCuckooFilter` |
+| --- | --- | --- | --- | --- |
+| Bucket layout | 4 × 8-bit fingerprints | 4 × 16-bit fingerprints | 16 × 8-bit fingerprints (one 16-byte group, like a hashbrown control group) | 8 × 16-bit fingerprints (same 16-byte group) |
+| Probe | scalar byte-by-byte compare | scalar (8-byte bucket — half a SIMD register) | one 128-bit load + vector compare + movemask (NEON `vceqq_u8`/`vshrn` on aarch64, SSE2 `_mm_cmpeq_epi8` on x86_64, scalar fallback elsewhere) | same, over 16-bit lanes (`vceqq_u16` / `_mm_cmpeq_epi16`) |
+| Memory | 1 byte/slot | 2 bytes/slot | 1 byte/slot | 2 bytes/slot |
+| Max load | ~95% | ~95% | ~98% | ~97% |
+| FPR @ 85% load | ~2.7% | ~0.010% | ~10.2% | ~0.023% |
+
+`standard16` is the equal-bits-per-key control for `wide`: both spend
+18.8 bits/key, but the narrow 4-slot bucket matches a query against 8
+candidates instead of 16 — so on the FPR-per-bit axis the classic layout
+stays ~2x ahead of the SIMD-friendly one.
 
 For comparison, `bloom::BloomFilter` is a classic Bloom filter
 (Kirsch–Mitzenmacher double hashing, k probes per operation, no deletion
@@ -34,10 +39,11 @@ Measured via `memory_bytes()` — the fingerprint table itself (struct overhead
 is a few bytes, there is no per-slot overhead).
 
 ```text
-standard 4x8bit scalar     1024 KiB    9.41 bits/key   FPR  2.67%
-swiss   16x8bit simd       1024 KiB    9.41 bits/key   FPR 10.15%
-wide    8x16bit simd       2048 KiB   18.82 bits/key   FPR  0.023%
-bloom   k=7     scalar     1024 KiB    9.41 bits/key   FPR  1.09%
+standard 4x8bit  scalar    1024 KiB    9.41 bits/key   FPR  2.67%
+standard 4x16bit scalar    2048 KiB   18.82 bits/key   FPR  0.0099%
+swiss   16x8bit  simd      1024 KiB    9.41 bits/key   FPR 10.15%
+wide    8x16bit  simd      2048 KiB   18.82 bits/key   FPR  0.023%
+bloom   k=7      scalar    1024 KiB    9.41 bits/key   FPR  1.09%
 ```
 
 At equal memory the Bloom filter beats the classic cuckoo filter on FPR
@@ -57,13 +63,14 @@ All numbers in this README were measured on:
 - **Toolchain**: rustc 1.94.0, cargo 1.94.0, edition 2024; bench profile with
   `lto = true`, `codegen-units = 1`, default `target-cpu`.
 - **Method**: criterion 0.7 defaults (100 samples, warm-up); machine on AC
-  power. Single-threaded, one filter instance per benchmark; 8192-query
-  batches per iteration for lookups.
+  power. Single-threaded, one filter instance per benchmark; lookup batches
+  of 8192 queries per iteration for L2-resident tables and 2^18 for
+  DRAM-resident ones.
 
 Absolute numbers will differ on other machines (especially x86_64, which
 takes the SSE2 path), but the relative picture should hold.
 
-## Speed (2^20 slots, 85% load)
+## Speed
 
 Lookup scenarios:
 
@@ -78,50 +85,71 @@ the primary bucket of one filter and the alternate bucket of another. The
 Bloom filter has no bucket structure (every hit costs the same k probes), so
 it gets a random sample of inserted keys in both hit scenarios.
 
+Every scenario runs at two table sizes: **2^20 slots** (1–2 MiB, tables and
+query working set fit in the M1 Max's 12 MiB L2 — measures probe cost) and
+**2^26 slots** (64–128 MiB, DRAM-resident — measures what survives when every
+probe is a cache/TLB miss). The DRAM run uses 2^18-key query batches so the
+touched cache lines cannot become L2-warm across criterion iterations.
+
+### L2-resident (2^20 slots, 85% load)
+
 ```text
-lookup_hit_first/standard4/scalar    398 Melem/s
-lookup_hit_first/swiss16/simd        577 Melem/s   (~1.5x)
-lookup_hit_first/swiss16/scalar      257 Melem/s
-lookup_hit_first/wide8x16/simd       586 Melem/s   (~1.5x)
-lookup_hit_first/bloom/scalar        145 Melem/s
+                        hit_first   hit_last    miss      (Melem/s)
+standard4/scalar           402         190       255
+standard4x16/scalar        416         208       276
+swiss16/simd               594         379       356
+swiss16/scalar             264          46       175
+wide8x16/simd              594         406       406
+bloom/scalar               147         146        73
+```
 
-lookup_hit_last/standard4/scalar     270 Melem/s
-lookup_hit_last/swiss16/simd         375 Melem/s   (~1.4x)
-lookup_hit_last/swiss16/scalar        45 Melem/s
-lookup_hit_last/wide8x16/simd        397 Melem/s   (~1.5x)
-lookup_hit_last/bloom/scalar         145 Melem/s
+### DRAM-resident (2^26 slots, 85% load)
 
-lookup_miss/standard4/scalar         250 Melem/s
-lookup_miss/swiss16/simd             362 Melem/s   (~1.4x)
-lookup_miss/swiss16/scalar           175 Melem/s
-lookup_miss/wide8x16/simd            399 Melem/s   (~1.6x)
-lookup_miss/bloom/scalar              71 Melem/s
+```text
+                        hit_first   hit_last    miss      (Melem/s)
+standard4/scalar           163          39        69
+standard4x16/scalar        148          35        55
+swiss16/simd               168          97        92
+swiss16/scalar             111          22        54
+wide8x16/simd              152          84        83
+bloom/scalar                35          35        29
+```
 
-insert/standard4/scalar               78 Melem/s
-insert/swiss16/simd                  398 Melem/s   (~5.1x)
-insert/wide8x16/simd                 262 Melem/s   (~3.4x)
-insert/bloom/scalar                  168 Melem/s
+### Inserts (2^16 slots, 85% load)
+
+```text
+insert/standard4/scalar               81 Melem/s
+insert/standard4x16/scalar            76 Melem/s
+insert/swiss16/simd                  409 Melem/s   (~5.1x)
+insert/wide8x16/simd                 294 Melem/s   (~3.6x)
+insert/bloom/scalar                  169 Melem/s
 ```
 
 Takeaways:
 
-- SIMD probing wins ~1.4–1.6x on lookups and ~3.4–5x on inserts (empty-slot
-  search is a single vector compare, and wider buckets also cause far fewer
-  cuckoo evictions at the same load).
-- The 16-slot scalar control shows the win really is vectorization: the same
-  layout probed byte-by-byte collapses to 45 Melem/s in its worst case
-  (`hit_last`), slower than the 4-slot baseline, while SIMD loses only ~35%
-  of its best case.
+- **In cache, SIMD probing wins ~1.5–2x on lookups** and ~3.6–5x on inserts
+  (empty-slot search is a single vector compare, and wider buckets also cause
+  far fewer cuckoo evictions at the same load).
+- **Out of cache, the best-case advantage evaporates**: `hit_first` is
+  168 vs 163 Melem/s (~3%) — one memory access dominates and it costs the
+  same for every layout. What survives is a 1.3–2.4x edge in `hit_last` and
+  `miss`, and notably not because of the wide compare itself: the branchless
+  SIMD probe lets the CPU issue the second bucket load speculatively, while
+  the scalar early-exit loop's unpredictable branches serialize the two cache
+  misses.
+- The 16-slot scalar control shows the in-cache win really is vectorization:
+  the same layout probed byte-by-byte collapses to 46 Melem/s in its worst
+  case, slower than the 4-slot baseline.
+- **At equal bits per key the classic layout wins the FPR axis**:
+  `standard4x16` reaches 0.0099% vs `wide8x16`'s 0.023% with identical
+  memory. Wider, SIMD-friendly buckets always pay ~2x FPR for their speed —
+  which is why 4-slot buckets remain the default in production filters.
 - `swiss16` pays for speed with false positives (~10% vs ~2.7%): a query
   matches against 32 candidates instead of 8 with the same 8-bit
   fingerprints.
-- `wide8x16` removes that trade-off: same lookup speed, ~100x lower FPR than
-  the baseline — at 2x the memory. Inserts are a bit slower than swiss16
-  because 8-slot buckets fill up sooner and evict more.
-- The Bloom filter is insensitive to the hit scenario, but its flat
-  145 Melem/s is 2.7–4x behind the SIMD variants, misses drop to 71 Melem/s
-  (k scattered probes with poorly predicted early exits), and it cannot
-  delete.
+- The Bloom filter is insensitive to the hit scenario, but k=7 scattered
+  probes hurt everywhere: 2.7–4x behind SIMD in cache, and a hard fall to
+  29–35 Melem/s from DRAM.
 
 ## Usage
 

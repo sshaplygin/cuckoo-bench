@@ -19,4 +19,5 @@ pub mod bloom;
 pub mod hash;
 pub mod simd;
 pub mod standard;
+pub mod standard16;
 pub mod wide;
