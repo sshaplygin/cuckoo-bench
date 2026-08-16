@@ -45,7 +45,25 @@ At equal memory the Bloom filter beats the classic cuckoo filter on FPR
 wide variant's budget), but it cannot delete items and touches up to k
 scattered cache lines per query versus 1–2 for cuckoo.
 
-## Speed (Apple Silicon, 2^20 slots, 85% load)
+## Benchmark environment
+
+All numbers in this README were measured on:
+
+- **CPU**: Apple M1 Max (aarch64) — 8 performance + 2 efficiency cores;
+  128-byte cache lines; 12 MiB shared L2 (P-cluster) + 4 MiB (E-cluster).
+  SIMD paths use NEON (128-bit).
+- **Memory**: 32 GiB unified.
+- **OS**: macOS 26.2 (build 25C56).
+- **Toolchain**: rustc 1.94.0, cargo 1.94.0, edition 2024; bench profile with
+  `lto = true`, `codegen-units = 1`, default `target-cpu`.
+- **Method**: criterion 0.7 defaults (100 samples, warm-up); machine on AC
+  power. Single-threaded, one filter instance per benchmark; 8192-query
+  batches per iteration for lookups.
+
+Absolute numbers will differ on other machines (especially x86_64, which
+takes the SSE2 path), but the relative picture should hold.
+
+## Speed (2^20 slots, 85% load)
 
 Lookup scenarios:
 
